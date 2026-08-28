@@ -4,8 +4,10 @@
 `conda export`. The current exporter writes CycloneDX 1.7 JSON from the exact
 package records of one resolved conda environment.
 
-This is alpha software. Install it into the environment that owns the `conda`
-executable by following the [installation guide](how-to/install.md).
+This is alpha software. Install the
+[conda-forge package](https://anaconda.org/conda-forge/conda-sboms) into the
+environment that owns the `conda` executable by following the
+[installation guide](how-to/install.md).
 
 After the plugin is installed in the environment that owns `conda`, export an
 installed environment by name:

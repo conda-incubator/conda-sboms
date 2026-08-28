@@ -5,21 +5,17 @@
 plugin installed in an unrelated named environment is not available to the
 other `conda` executable.
 
-conda 26.3 or newer is required. conda 26.5 and newer include the
-[`conda-pypi` plugin](https://conda.github.io/conda-pypi/quickstart/), which can
-download the published wheel from PyPI, convert it to a conda package, and
-install it into the environment that owns conda.
+conda 26.3 or newer is required.
 
-For a standard conda installation, activate `base` and install the plugin:
+## Install from conda-forge
+
+For a standard conda installation, activate `base` and install the
+[conda-forge package](https://anaconda.org/conda-forge/conda-sboms):
 
 ```console
 conda activate base
-conda pypi install "conda-sboms>=0.2.0"
+conda install --channel conda-forge "conda-sboms>=0.3.0"
 ```
-
-`conda pypi install` is pending removal in conda 27.9. If the command is not
-available, use the pip method below. The `conda-pypi` channel does not currently
-serve `conda-sboms`.
 
 Confirm that the same conda installation discovers the exporter:
 
@@ -35,12 +31,15 @@ The help output should list:
 
 ## Install with pip
 
-If `conda pypi` is not available, activate the environment that owns the
-`conda` executable and install the same wheel directly:
+To install the published [PyPI wheel](https://pypi.org/project/conda-sboms/)
+instead, activate the environment that owns the `conda` executable and run:
 
 ```console
-python -m pip install "conda-sboms>=0.2.0"
+python -m pip install "conda-sboms>=0.3.0"
 ```
+
+Conda is not distributed on PyPI, so this method requires an existing conda
+installation.
 
 ## Run from a source checkout
 

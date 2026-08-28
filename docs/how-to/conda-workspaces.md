@@ -9,8 +9,7 @@ For a standard conda installation, activate `base` and install both plugins:
 
 ```console
 conda activate base
-conda install --channel conda-forge "conda-workspaces>=0.8.0"
-conda pypi install "conda-sboms>=0.2.0"
+conda install --channel conda-forge "conda-workspaces>=0.8.0" "conda-sboms>=0.3.0"
 ```
 
 The CycloneDX exporter requires exact package records. A declared workspace
