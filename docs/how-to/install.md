@@ -7,6 +7,12 @@ other `conda` executable.
 
 conda 26.3 or newer is required.
 
+:::{note}
+The released package provides CycloneDX 1.7 JSON. SPDX 3.0.1 JSON-LD,
+CycloneDX 1.7 XML, and CycloneDX 1.6 JSON are unreleased and require the source
+checkout described below.
+:::
+
 ## Install from conda-forge
 
 For a standard conda installation, activate `base` and install the
@@ -57,6 +63,10 @@ Install the development environment and inspect the registered formats:
 pixi install --locked -e dev
 pixi run --locked -e dev conda export --help
 ```
+
+This source version also registers `spdx-jsonld-v3.0.1`,
+`cyclonedx-xml-v1.7`, and `cyclonedx-json-v1.6`. See the
+[format reference](../reference/formats.md) for aliases and filenames.
 
 Run commands through the same environment:
 

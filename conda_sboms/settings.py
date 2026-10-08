@@ -12,7 +12,7 @@ from conda.plugins.types import CondaSetting
 
 @dataclass(frozen=True, slots=True)
 class CycloneDXExportMetadata:
-    """Validated product and author metadata for one CycloneDX export."""
+    """Validated product and author metadata for one SBOM export."""
 
     product_name: str | None = None
     product_version: str | None = None
@@ -192,3 +192,6 @@ class CycloneDXExportMetadata:
                 parameter=PrimitiveParameter("", element_type=str),
             ),
         )
+
+
+ExportMetadata = CycloneDXExportMetadata

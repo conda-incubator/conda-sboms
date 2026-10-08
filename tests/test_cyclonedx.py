@@ -1,58 +1,27 @@
 from __future__ import annotations
 
 import json
-import os
-import subprocess
-import sys
+from xml.etree import ElementTree
 
 import pytest
 from conda.exceptions import CondaValueError
 from conda.models.environment import Environment
 from conda.models.match_spec import MatchSpec
 from conda.models.records import PackageRecord
-from conda.plugins.types import EnvironmentFormat
 from cyclonedx.schema import SchemaVersion
-from cyclonedx.validation.json import JsonStrictValidator
 
 from conda_sboms.cyclonedx import (
     CycloneDXDependencyGraph,
     CycloneDXExporter,
     CycloneDXPackage,
     export_cyclonedx_json,
+    export_cyclonedx_json_v1_6,
+    export_cyclonedx_xml,
 )
-from conda_sboms.plugin import conda_environment_exporters
 from conda_sboms.settings import CycloneDXExportMetadata
 
-
-def package_record(
-    name: str,
-    *,
-    version: str = "1.0",
-    build: str = "h123_0",
-    depends: tuple[str, ...] = (),
-    sha256: str | None = None,
-    md5: str | None = None,
-    license_name: str | None = None,
-    url: str | None = None,
-    channel: str = "https://conda.anaconda.org/conda-forge",
-    filename: str | None = None,
-) -> PackageRecord:
-    filename = filename or f"{name}-{version}-{build}.conda"
-    return PackageRecord(
-        name=name,
-        version=version,
-        build=build,
-        build_number=0,
-        channel=channel,
-        subdir="linux-64",
-        fn=filename,
-        depends=list(depends),
-        sha256=sha256,
-        md5=md5,
-        license=license_name,
-        size=123,
-        url=url or f"https://conda.anaconda.org/conda-forge/linux-64/{filename}",
-    )
+from .records import package_record
+from .sbom_validation import validate_cyclonedx_json, validate_cyclonedx_xml
 
 
 def component_named(document: dict, name: str) -> dict:
@@ -108,7 +77,16 @@ def test_public_object_api(monkeypatch: pytest.MonkeyPatch) -> None:
     assert exporter.export() == (export_cyclonedx_json(environment, metadata=metadata))
 
 
-def test_export_maps_resolved_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("export", "schema_version"),
+    [
+        (export_cyclonedx_json, SchemaVersion.V1_7),
+        (export_cyclonedx_json_v1_6, SchemaVersion.V1_6),
+    ],
+)
+def test_export_maps_resolved_environment(
+    monkeypatch: pytest.MonkeyPatch, export, schema_version: SchemaVersion
+) -> None:
     monkeypatch.setenv("SOURCE_DATE_EPOCH", "0")
     openssl = package_record("openssl", sha256="c" * 64)
     python = package_record(
@@ -143,12 +121,12 @@ def test_export_maps_resolved_environment(monkeypatch: pytest.MonkeyPatch) -> No
         virtual_packages=[virtual],
     )
 
-    output = export_cyclonedx_json(environment, metadata=CycloneDXExportMetadata())
+    output = export(environment, metadata=CycloneDXExportMetadata())
     document = json.loads(output)
 
     assert output.endswith("\n")
     assert document["bomFormat"] == "CycloneDX"
-    assert document["specVersion"] == "1.7"
+    assert document["specVersion"] == schema_version.to_version()
     assert document["version"] == 1
     assert "serialNumber" not in document
     assert document["metadata"]["timestamp"] == "1970-01-01T00:00:00+00:00"
@@ -210,7 +188,7 @@ def test_export_maps_resolved_environment(monkeypatch: pytest.MonkeyPatch) -> No
             "dependencies": [python_component["bom-ref"]],
         },
     ]
-    assert JsonStrictValidator(SchemaVersion.V1_7).validate_str(output) is None
+    validate_cyclonedx_json(document)
 
 
 def test_inferred_roots_cover_a_disconnected_cycle(
@@ -249,8 +227,13 @@ def test_inferred_roots_cover_a_disconnected_cycle(
     ]
 
 
+@pytest.mark.parametrize(
+    "export",
+    [export_cyclonedx_json, export_cyclonedx_json_v1_6, export_cyclonedx_xml],
+)
 def test_export_is_deterministic_for_reordered_records(
     monkeypatch: pytest.MonkeyPatch,
+    export,
 ) -> None:
     monkeypatch.setenv("SOURCE_DATE_EPOCH", "1720000000")
     first = package_record("first", depends=("second",))
@@ -265,13 +248,22 @@ def test_export_is_deterministic_for_reordered_records(
         explicit_packages=[second, first],
     )
 
-    assert export_cyclonedx_json(
-        forward, metadata=CycloneDXExportMetadata()
-    ) == export_cyclonedx_json(reverse, metadata=CycloneDXExportMetadata())
+    assert export(forward, metadata=CycloneDXExportMetadata()) == export(
+        reverse, metadata=CycloneDXExportMetadata()
+    )
 
 
+@pytest.mark.parametrize(
+    ("export", "schema_version"),
+    [
+        (export_cyclonedx_json, SchemaVersion.V1_7),
+        (export_cyclonedx_json_v1_6, SchemaVersion.V1_6),
+    ],
+)
 def test_output_reproducible_omits_timestamp(
     monkeypatch: pytest.MonkeyPatch,
+    export,
+    schema_version: SchemaVersion,
 ) -> None:
     monkeypatch.setenv("SOURCE_DATE_EPOCH", "invalid")
     environment = Environment(
@@ -283,6 +275,7 @@ def test_output_reproducible_omits_timestamp(
         environment,
         metadata=CycloneDXExportMetadata(),
         output_reproducible=True,
+        schema_version=schema_version.to_version(),
     )
 
     output = exporter.export()
@@ -294,12 +287,12 @@ def test_output_reproducible_omits_timestamp(
     assert document["metadata"]["properties"] == [
         {"name": "cdx:reproducible", "value": "true"}
     ]
-    assert output == export_cyclonedx_json(
+    assert output == export(
         environment,
         metadata=CycloneDXExportMetadata(),
         output_reproducible=True,
     )
-    assert JsonStrictValidator(SchemaVersion.V1_7).validate_str(output) is None
+    validate_cyclonedx_json(document)
 
 
 def test_local_source_paths_are_not_serialized(
@@ -415,72 +408,170 @@ def test_export_requires_exact_records() -> None:
         export_cyclonedx_json(environment, metadata=CycloneDXExportMetadata())
 
 
-def test_plugin_registration() -> None:
-    exporters = list(conda_environment_exporters())
+@pytest.mark.parametrize(
+    ("schema_version", "serialization"),
+    [("1.5", "json"), ("1.6", "xml"), ("1.7", "yaml"), ("1.7", "JSON")],
+)
+def test_unsupported_serialization_fails(
+    schema_version: str, serialization: str
+) -> None:
+    environment = Environment(
+        platform="linux-64", explicit_packages=[package_record("example")]
+    )
 
-    assert len(exporters) == 1
-    assert exporters[0].name == "cyclonedx-json-v1.7"
-    assert exporters[0].aliases == ("cyclonedx-json", "cyclonedx", "cdx-json")
-    assert exporters[0].environment_format is EnvironmentFormat.environment
-    assert exporters[0].export is export_cyclonedx_json
+    with pytest.raises(CondaValueError, match="Unsupported CycloneDX"):
+        CycloneDXExporter(
+            environment,
+            schema_version=schema_version,
+            serialization=serialization,
+            metadata=CycloneDXExportMetadata(),
+        )
 
 
-def test_conda_discovers_and_runs_exporter(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_json_versions_preserve_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SOURCE_DATE_EPOCH", "0")
-    environment = os.environ.copy()
-    environment["CONDA_NO_PLUGINS"] = "false"
-    environment["CONDA_PLUGINS_CONDA_SBOMS_PRODUCT_NAME"] = "  Acme Runtime  "
-    environment["CONDA_PLUGINS_CONDA_SBOMS_PRODUCT_VERSION"] = "2026.08"
-    environment["CONDA_PLUGINS_CONDA_SBOMS_PRODUCT_MANUFACTURER"] = "Acme GmbH"
-    environment["CONDA_PLUGINS_CONDA_SBOMS_PRODUCT_MANUFACTURER_URL"] = (
+    environment = Environment(
+        platform="linux-64", explicit_packages=[package_record("example")]
+    )
+    metadata = CycloneDXExportMetadata(
+        product_name="Acme Runtime",
+        product_version="2026.08",
+        product_manufacturer="Acme GmbH",
+        product_manufacturer_url="https://acme.example/products/runtime",
+        author_name="Alice Example",
+        author_email="alice@acme.example",
+        author_organization="Acme Product Security",
+        author_organization_url="https://acme.example/security",
+    )
+    current = json.loads(export_cyclonedx_json(environment, metadata=metadata))
+    older = json.loads(export_cyclonedx_json_v1_6(environment, metadata=metadata))
+
+    assert older.pop("specVersion") == "1.6"
+    assert current.pop("specVersion") == "1.7"
+    assert older.pop("$schema").endswith("bom-1.6.schema.json")
+    assert current.pop("$schema").endswith("bom-1.7.schema.json")
+    assert older == current
+
+
+@pytest.mark.parametrize("requested", [False, True])
+@pytest.mark.parametrize("reproducible", [False, True])
+def test_xml_maps_metadata_packages_and_compositions(
+    monkeypatch: pytest.MonkeyPatch, requested: bool, reproducible: bool
+) -> None:
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "invalid" if reproducible else "0")
+    environment = Environment(
+        name="demo",
+        prefix="/Users/alice/private-prefix",
+        platform="linux-64",
+        explicit_packages=[
+            package_record("leaf"),
+            package_record(
+                "example",
+                depends=("leaf", "missing"),
+                sha256="A" * 64,
+                md5="b" * 32,
+                license_name="Legacy terms",
+                url="https://user:secret@example.org/t/token/example.conda?token=secret",
+            ),
+        ],
+        requested_packages=[MatchSpec("example")] if requested else [],
+        external_packages={"pip": ["omitted==1"]},
+    )
+    metadata = CycloneDXExportMetadata(
+        product_name="Acme & Runtime",
+        product_version="2026.08",
+        product_manufacturer="Acme GmbH",
+        product_manufacturer_url="https://acme.example/products/runtime",
+        author_name="Alice Example",
+        author_email="alice@acme.example",
+        author_organization="Acme Security",
+        author_organization_url="https://acme.example/security",
+    )
+
+    output = export_cyclonedx_xml(
+        environment, metadata=metadata, output_reproducible=reproducible
+    )
+    document = ElementTree.fromstring(output)
+    ns = {"c": "http://cyclonedx.org/schema/bom/1.7"}
+    root = document.find("c:metadata/c:component", ns)
+    example = document.find("c:components/c:component[c:name='example']", ns)
+    leaf = document.find("c:components/c:component[c:name='leaf']", ns)
+
+    assert output.endswith("\n")
+    assert document.tag == "{http://cyclonedx.org/schema/bom/1.7}bom"
+    assert document.attrib == {"version": "1"}
+    assert "private-prefix" not in output
+    assert "secret" not in output
+    assert "token" not in output
+    assert root.findtext("c:name", namespaces=ns) == "Acme & Runtime"
+    assert root.findtext("c:version", namespaces=ns) == "2026.08"
+    assert root.findtext("c:manufacturer/c:name", namespaces=ns) == "Acme GmbH"
+    assert root.findtext("c:manufacturer/c:url", namespaces=ns) == (
         "https://acme.example/products/runtime"
     )
-    environment["CONDA_PLUGINS_CONDA_SBOMS_AUTHOR_NAME"] = "Alice Example"
-    environment["CONDA_PLUGINS_CONDA_SBOMS_AUTHOR_EMAIL"] = "alice@acme.example"
-    environment["CONDA_PLUGINS_CONDA_SBOMS_AUTHOR_ORGANIZATION"] = (
-        "Acme Product Security"
-    )
-    environment["CONDA_PLUGINS_CONDA_SBOMS_AUTHOR_ORGANIZATION_URL"] = (
-        "https://acme.example/security"
-    )
-
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "conda",
-            "export",
-            "--prefix",
-            sys.prefix,
-            "--format",
-            "cyclonedx-json",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        env=environment,
-    )
-    document = json.loads(completed.stdout)
-
-    assert document["specVersion"] == "1.7"
-    assert document["metadata"]["authors"] == [
-        {"email": "alice@acme.example", "name": "Alice Example"}
-    ]
-    assert document["metadata"]["manufacturer"] == {
-        "name": "Acme Product Security",
-        "url": ["https://acme.example/security"],
-    }
-    root = document["metadata"]["component"]
-    assert root["name"] == "Acme Runtime"
-    assert root["version"] == "2026.08"
-    assert root["manufacturer"] == {
-        "name": "Acme GmbH",
-        "url": ["https://acme.example/products/runtime"],
-    }
-    assert root["bom-ref"].startswith(
-        "conda-environment:Acme%20Runtime@2026.08?platform="
-    )
-    assert document["metadata"]["tools"]["components"][0]["name"] == "conda-sboms"
     assert (
-        JsonStrictValidator(SchemaVersion.V1_7).validate_str(completed.stdout) is None
+        document.findtext("c:metadata/c:manufacturer/c:name", namespaces=ns)
+        == "Acme Security"
     )
+    assert (
+        document.findtext("c:metadata/c:authors/c:author/c:email", namespaces=ns)
+        == "alice@acme.example"
+    )
+    timestamp = document.find("c:metadata/c:timestamp", ns)
+    if reproducible:
+        assert timestamp is None
+        assert (
+            document.findtext(
+                "c:metadata/c:properties/c:property[@name='cdx:reproducible']",
+                namespaces=ns,
+            )
+            == "true"
+        )
+    else:
+        assert timestamp.text == "1970-01-01T00:00:00+00:00"
+    assert example.findtext("c:purl", namespaces=ns) == example.attrib["bom-ref"]
+    assert example.findtext("c:hashes/c:hash[@alg='SHA-256']", namespaces=ns) == (
+        "a" * 64
+    )
+    assert example.findtext("c:hashes/c:hash[@alg='MD5']", namespaces=ns) == "b" * 32
+    assert example.findtext("c:licenses/c:license/c:name", namespaces=ns) == (
+        "Legacy terms"
+    )
+    assert (
+        example.findtext(
+            "c:externalReferences/c:reference[@type='distribution']/c:url",
+            namespaces=ns,
+        )
+        == "https://example.org/example.conda"
+    )
+    assert (
+        example.findtext(
+            "c:properties/c:property[@name='conda:package:filename']", namespaces=ns
+        )
+        == "example-1.0-h123_0.conda"
+    )
+    dependencies = {
+        entry.attrib["ref"]: [child.attrib["ref"] for child in entry]
+        for entry in document.find("c:dependencies", ns)
+    }
+    assert dependencies == {
+        root.attrib["bom-ref"]: [example.attrib["bom-ref"]],
+        example.attrib["bom-ref"]: [leaf.attrib["bom-ref"]],
+        leaf.attrib["bom-ref"]: [],
+    }
+    compositions = document.findall("c:compositions/c:composition", ns)
+    assert len(compositions) == 2
+    assert compositions[0].findtext("c:aggregate", namespaces=ns) == "incomplete"
+    assert compositions[0].find("c:assemblies/c:assembly", ns).attrib == {
+        "ref": root.attrib["bom-ref"]
+    }
+    inferred = compositions[0].find("c:dependencies/c:dependency", ns)
+    if requested:
+        assert inferred is None
+    else:
+        assert inferred.attrib == {"ref": root.attrib["bom-ref"]}
+    assert compositions[1].findtext("c:aggregate", namespaces=ns) == "incomplete"
+    assert compositions[1].find("c:dependencies/c:dependency", ns).attrib == {
+        "ref": example.attrib["bom-ref"]
+    }
+    validate_cyclonedx_xml(output)

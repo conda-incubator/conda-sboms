@@ -1,15 +1,38 @@
 # conda-sboms
 
-Generate a CycloneDX software bill of materials (SBOM) for an existing conda
+Generate a software bill of materials (SBOM) for an existing conda
 environment.
 
-`conda-sboms` is an exporter plugin for `conda`. It adds the `cyclonedx-json`
-format to `conda export` and writes conda's exact package records and dependency
-graph as CycloneDX 1.7 JSON. Because it uses conda's standard exporter hook,
-clients such as conda-workspaces can use the same format.
+`conda-sboms` adds CycloneDX and SPDX export to `conda export`. It writes the
+exact package records and dependency graph of one resolved conda environment.
+Clients such as conda-workspaces can use the same exporters through conda's
+plugin hook.
 
 The project is alpha software. Questions, bug reports, and contributions are
 [welcome on GitHub](https://github.com/conda-incubator/conda-sboms).
+
+## Output formats
+
+| Output | `--format` | Aliases | Filename detection |
+| --- | --- | --- | --- |
+| CycloneDX 1.7 JSON | `cyclonedx-json-v1.7` | `cyclonedx-json`, `cyclonedx`, `cdx-json` | `*.cdx.json` |
+| CycloneDX 1.7 XML | `cyclonedx-xml-v1.7` | `cyclonedx-xml`, `cdx-xml` | `*.cdx.xml` |
+| CycloneDX 1.6 JSON | `cyclonedx-json-v1.6` | None | None, use `--format` |
+| SPDX 3.0.1 JSON-LD | `spdx-jsonld-v3.0.1` | `spdx-jsonld` | `*.spdx3.json`, `*.spdx.jsonld` |
+
+CycloneDX 1.7 JSON is available in released packages. The other three outputs
+are unreleased and require a
+[source checkout](https://conda-incubator.github.io/conda-sboms/how-to/install/).
+
+Use a versioned name in automation to keep the schema version fixed. Aliases
+can advance to a later supported version. `cyclonedx-json` and `.cdx.json`
+filenames select 1.7. Select 1.6 explicitly with `--format cyclonedx-json-v1.6`,
+which takes precedence over filename detection. SPDX 2.3 is not supported.
+
+See the [format selection guide](https://conda-incubator.github.io/conda-sboms/how-to/choose-format/)
+for export commands and consumer compatibility checks, or the
+[format reference](https://conda-incubator.github.io/conda-sboms/reference/formats/)
+for Python entry points.
 
 ## Quick start
 
@@ -43,8 +66,6 @@ that authored the SBOM.
 
 For a disposable example, follow the
 [getting-started tutorial](https://conda-incubator.github.io/conda-sboms/tutorials/getting-started/).
-The [installation guide](https://conda-incubator.github.io/conda-sboms/how-to/install/)
-also covers source checkouts.
 
 ## What the SBOM contains
 
@@ -58,7 +79,7 @@ conda package URLs, and dependency relationships.
 The exporter does not inspect package contents, discover vendored or statically
 linked software, include packages from other ecosystems, infer a manufacturer,
 scan for vulnerabilities, or establish Cyber Resilience Act conformity. The
-root composition marks overall coverage as unproven.
+document marks overall coverage as unproven.
 Conda-specific properties record known external-package, virtual-package, and
 missing-dependency counts supplied by the input.
 
@@ -68,8 +89,12 @@ output, and coverage limits.
 
 ## Development
 
+SPDX support reuses existing runtime packages and serializes documents with
+Python's `json` module. It adds no new runtime package. Schema and semantic
+validators are development dependencies.
+
 Install the locked development environment and confirm that conda discovers the
-exporter:
+exporters:
 
 ```console
 pixi install --locked -e dev
