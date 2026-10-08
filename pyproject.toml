@@ -23,6 +23,7 @@ dependencies = [
   # conda >=26.3 is required but is not distributed on PyPI.
   "cyclonedx-python-lib>=11.12,<12",
   "packageurl-python>=0.16",
+  "license-expression>=30,<31",
 ]
 dynamic = ["version"]
 
@@ -60,6 +61,7 @@ python = ">=3.10"
 conda = ">=26.3"
 cyclonedx-python-lib = ">=11.12,<12"
 packageurl-python = ">=0.16"
+license-expression = ">=30,<31"
 
 [tool.pixi.pypi-dependencies]
 conda-sboms = { path = ".", editable = true }
@@ -83,7 +85,10 @@ sphinx-design = ">=0.6"
 docs = { cmd = "sphinx-build -W --keep-going -n -b dirhtml docs docs/_build/dirhtml", description = "Build documentation" }
 
 [tool.pixi.feature.test.dependencies]
-jsonschema = ">=4.0"
+jsonschema = ">=4.18"
+lxml = ">=5,<7"
+pyshacl = ">=0.30,<1"
+rdflib = ">=7.1,<8"
 pytest = ">=8.0"
 
 [tool.pixi.feature.py310.dependencies]

@@ -1,7 +1,7 @@
-# CycloneDX JSON exporter
+# CycloneDX exporters
 
-The exporter accepts one resolved conda environment and returns a CycloneDX 1.7
-JSON document ending with a newline.
+The exporters accept one resolved conda environment and return a CycloneDX
+document ending with a newline. The default remains CycloneDX 1.7 JSON.
 
 ## Format identity
 
@@ -37,7 +37,21 @@ conda export --name my-environment \
 Omit `--file` to write the document to standard output. `conda-sboms` does not
 add a separate command-line interface.
 
-## Input contract
+### Additional outputs
+
+The source version also provides these unreleased outputs:
+
+| Specification | Canonical name | Aliases | Filename pattern |
+| --- | --- | --- | --- |
+| CycloneDX 1.7 XML | `cyclonedx-xml-v1.7` | `cyclonedx-xml`, `cdx-xml` | `*.cdx.xml` |
+| CycloneDX 1.6 JSON | `cyclonedx-json-v1.6` | None | None, explicit format required |
+
+The unversioned JSON aliases and `.cdx.json` detection continue to select
+1.7. Selecting 1.6 invokes its version-specific serializer. It does not
+relabel a 1.7 document. XML uses the same conda field mappings with CycloneDX's
+XML representation.
+
+## Input
 
 The exporter receives one `conda.models.environment.Environment` through
 conda's `conda_environment_exporters` hook. `explicit_packages` must contain at
@@ -65,7 +79,7 @@ The object API consists of four public classes:
 | `CycloneDXExportMetadata(...)` | Validate caller-supplied product and author metadata |
 | `CycloneDXPackage(record)` | Map one exact `PackageRecord` to a CycloneDX component |
 | `CycloneDXDependencyGraph(packages)` | Build dependency edges and select product roots |
-| `CycloneDXExporter(environment, *, metadata=None, output_reproducible=False)` | Build and serialize the complete CycloneDX document |
+| `CycloneDXExporter(environment, *, metadata=None, output_reproducible=False, schema_version="1.7", serialization="json")` | Build and serialize the complete CycloneDX document |
 
 The exact call signatures are:
 
@@ -90,6 +104,8 @@ CycloneDXExporter(
     *,
     metadata: CycloneDXExportMetadata | None = None,
     output_reproducible: bool = False,
+    schema_version: str = "1.7",
+    serialization: str = "json",
 )
 CycloneDXExporter.export() -> str
 ```
@@ -101,10 +117,12 @@ Their public state is part of the API:
 | `CycloneDXExportMetadata` | `product_name`, `product_version`, `product_manufacturer`, `product_manufacturer_url`, `author_name`, `author_email`, `author_organization`, `author_organization_url` |
 | `CycloneDXPackage` | `record`, `component` |
 | `CycloneDXDependencyGraph` | `references_by_name`, `components_by_reference`, `edges`, `missing_edge_count`, `incomplete_references`, `root_references(requested_packages)` |
-| `CycloneDXExporter` | `packages`, `graph`, `root_references`, `roots_inferred`, `root_completeness`, `metadata`, `root`, `output_reproducible`, `timestamp`, `export()` |
+| `CycloneDXExporter` | `packages`, `graph`, `root_references`, `roots_inferred`, `root_completeness`, `metadata`, `root`, `output_reproducible`, `timestamp`, `schema_version`, `serialization`, `export()` |
 
 `CycloneDXExportMetadata` instances are immutable. Construction strips
 surrounding whitespace from string values and converts empty values to `None`.
+The unreleased `ExportMetadata` name in `conda_sboms.settings` is an alias
+of the same class for use by either SBOM format.
 
 Use `CycloneDXExporter` directly when calling the exporter from Python:
 
@@ -123,7 +141,7 @@ document = CycloneDXExporter(
 
 The conda plugin hook uses the public callback with this signature:
 
-```python
+```text
 export_cyclonedx_json(
     environment: Environment,
     *,
@@ -131,6 +149,14 @@ export_cyclonedx_json(
     output_reproducible: bool = False,
 ) -> str
 ```
+
+The unreleased `export_cyclonedx_xml` and `export_cyclonedx_json_v1_6`
+callbacks have the same arguments and select XML 1.7 and JSON 1.6,
+respectively. `export_cyclonedx_json` remains pinned to JSON 1.7.
+
+The object API accepts only the pairs `schema_version="1.7"` with
+`serialization="json"` or `"xml"`, and `schema_version="1.6"` with
+`serialization="json"`. Other combinations raise `CondaValueError`.
 
 When `metadata` is `None`, the callback reads conda's active plugin settings.
 An explicit `CycloneDXExportMetadata` object replaces those settings for that
@@ -143,9 +169,9 @@ policy. Construct a new instance after changing any of those inputs.
 
 | CycloneDX field | Source |
 | --- | --- |
-| `$schema` | CycloneDX 1.7 JSON schema URL |
+| `$schema` | Selected CycloneDX JSON schema URL |
 | `bomFormat` | `CycloneDX` |
-| `specVersion` | `1.7` |
+| `specVersion` | `1.7` or explicitly selected `1.6` |
 | `version` | `1` for each newly generated document |
 | `metadata.timestamp` | Current UTC time, `SOURCE_DATE_EPOCH`, or omitted in reproducible mode |
 | `metadata.properties` | `cdx:reproducible=true` in reproducible mode |
@@ -159,6 +185,12 @@ byte-for-byte identical output.
 
 The author fields are omitted when their values are absent. They describe who
 created the SBOM and remain separate from the `conda-sboms` generating tool.
+
+XML expresses the selected version through the CycloneDX 1.7 namespace,
+rather than JSON's `$schema`, `bomFormat`, and `specVersion` fields. The
+serializer preserves equivalent metadata, package mappings, and composition
+claims in its schema-defined elements. The complete serialized output is
+validated against the official XSD in tests.
 
 ## Product metadata settings
 
@@ -241,7 +273,8 @@ matched by package name to the resolved record. `constrains` entries are not
 dependencies and are not mapped.
 
 The document contains one dependency entry for the root and one for every
-package component. Known leaves have an explicit empty `dependsOn` array.
+package component. Known leaves have an explicit empty `dependsOn` array in
+JSON, or a childless `<dependency ref="…"/>` element in XML.
 
 When `requested_packages` is non-empty, names also present in the resolved
 records become root dependencies. Requested names absent from the records are
@@ -286,5 +319,7 @@ The exporter explicitly rejects:
   a query, a fragment, or malformed percent escapes
 - `SOURCE_DATE_EPOCH` is negative, malformed, or outside the platform's
   supported timestamp range
+- an unsupported specification and serialization pair is supplied to
+  `CycloneDXExporter`
 
 Failures occur before conda writes the output returned by the exporter.

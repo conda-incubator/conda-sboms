@@ -1,0 +1,2 @@
+# Preserve pinned upstream schema bytes so recorded hashes match on every platform.
+tests/schemas/*/* -text -whitespace linguist-vendored

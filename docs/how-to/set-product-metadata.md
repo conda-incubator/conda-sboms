@@ -12,6 +12,9 @@ which you can establish those identities.
 The settings belong to conda's plugin configuration. They work with
 `conda export` and with clients that call the same exporter hook.
 
+The same values apply to all formats. SPDX 3.0.1 JSON-LD, CycloneDX 1.7 XML,
+and CycloneDX 1.6 JSON are currently available only from a source checkout.
+
 ## Configure one export
 
 Set the matching `CONDA_PLUGINS_*` variables in a child shell so they cannot
@@ -74,6 +77,14 @@ The product replaces the generic environment identity in
 author organization is recorded as the organization that created the BOM, and
 the individual author is recorded in `metadata.authors`. The `conda-sboms` tool
 component remains separate.
+
+CycloneDX XML and 1.6 JSON preserve these same identities. In SPDX, the
+product identifies the environment application package, the manufacturer is
+its originator organization, and supplied authors identify the agents that
+created the document. The generating `SoftwareAgent` remains separate.
+To export SPDX from the source development environment, use
+`pixi run --locked -e dev conda export` with `--format spdx-jsonld-v3.0.1`
+and a `.spdx.jsonld` output filename.
 
 ## Save metadata in conda configuration
 
@@ -148,3 +159,23 @@ document = CycloneDXExporter(
 `environment` is the resolved `conda.models.environment.Environment` passed to
 an environment exporter. Supplying `CycloneDXExportMetadata` bypasses the
 active conda plugin settings for that exporter.
+
+For SPDX, use the shared alias and the SPDX callback:
+
+```python
+from conda_sboms.settings import ExportMetadata
+from conda_sboms.spdx3 import export_spdx_jsonld
+
+document = export_spdx_jsonld(
+    environment,
+    metadata=ExportMetadata(
+        product_name="Acme Runtime",
+        product_version="2026.08",
+        author_organization="Acme Product Security",
+    ),
+)
+```
+
+`ExportMetadata` is an alias of `CycloneDXExportMetadata`, with identical
+validation and precedence. Existing imports and configured setting names
+continue to work.

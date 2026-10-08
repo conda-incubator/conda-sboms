@@ -29,21 +29,31 @@ requirements:
     - conda >=26.3
     - cyclonedx-python-lib >=11.12,<12
     - packageurl-python >=0.16
+    - license-expression >=30,<31
 
 tests:
   - python:
       imports:
         - conda_sboms
+        - conda_sboms.cyclonedx
+        - conda_sboms.spdx3
       pip_check: true
   - script:
-      - python -c "import subprocess; assert 'cyclonedx-json' in subprocess.check_output(['conda', 'export', '--help'], text=True)"
+      - conda export --format cyclonedx-json-v1.7 --file sbom.cdx.json
+      - conda export --format cyclonedx-json-v1.6 --file sbom-1.6.cdx.json
+      - conda export --format cyclonedx-xml-v1.7 --file sbom.cdx.xml
+      - conda export --format spdx-jsonld-v3.0.1 --file sbom.spdx3.json
+      - python -c "import json; assert json.load(open('sbom.cdx.json'))['specVersion'] == '1.7'"
+      - python -c "import json; assert json.load(open('sbom-1.6.cdx.json'))['specVersion'] == '1.6'"
+      - python -c "from xml.etree import ElementTree; assert ElementTree.parse('sbom.cdx.xml').getroot().tag == '{http://cyclonedx.org/schema/bom/1.7}bom'"
+      - python -c "import json; assert json.load(open('sbom.spdx3.json'))['@context'] == 'https://spdx.org/rdf/3.0.1/spdx-context.jsonld'"
 
 about:
   summary: Generate software bills of materials from conda environments
   description: |
     conda-sboms provides software bill of materials exporters through conda's
-    environment exporter plugin hook. Its first exporter emits CycloneDX 1.7
-    JSON from resolved conda package records.
+    environment exporter plugin hook. It emits CycloneDX 1.7 JSON and XML,
+    CycloneDX 1.6 JSON, and SPDX 3.0.1 JSON-LD from resolved conda package records.
   license: BSD-3-Clause
   license_file: LICENSE
   repository: https://github.com/conda-incubator/conda-sboms

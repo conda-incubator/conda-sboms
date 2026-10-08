@@ -3,14 +3,12 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime, timezone
-from string import hexdigits
 from typing import TYPE_CHECKING
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import quote
 from uuid import UUID
+from xml.dom import minidom
 
-from conda.common.url import remove_auth, split_anaconda_token
 from conda.exceptions import CondaValueError
-from conda.models.match_spec import MatchSpec
 from cyclonedx.model import (
     ExternalReference,
     ExternalReferenceType,
@@ -24,16 +22,24 @@ from cyclonedx.model.component import Component, ComponentType
 from cyclonedx.model.contact import OrganizationalContact, OrganizationalEntity
 from cyclonedx.model.license import DisjunctiveLicense
 from cyclonedx.model.tool import ToolRepository
-from cyclonedx.output.json import JsonV1Dot7
+from cyclonedx.output import make_outputter
+from cyclonedx.schema import OutputFormat, SchemaVersion
 from packageurl import PackageURL
 
 from . import __version__
+from ._conda import (
+    package_dependency_graph,
+    package_identity,
+    root_dependency_references,
+    validated_hashes,
+)
 from .settings import CycloneDXExportMetadata
 
 if TYPE_CHECKING:
     from typing import Final
 
     from conda.models.environment import Environment
+    from conda.models.match_spec import MatchSpec
     from conda.models.records import PackageRecord
     from cyclonedx.model.bom_ref import BomRef
 
@@ -49,97 +55,21 @@ class CycloneDXPackage:
     def __init__(self, record: PackageRecord) -> None:
         self.record = record
 
-        raw_filename = record.fn
-        filename = None
-        if raw_filename:
-            filename = str(raw_filename).replace("\\", "/").rsplit("/", 1)[-1]
-            filename = filename.split("?", 1)[0].split("#", 1)[0] or None
-
-        channel_name = record.channel_name
-        if record.channel.scheme == "file" or channel_name in {
-            None,
-            "",
-            "<unknown>",
-        }:
-            channel_name = None
-
-        qualifiers = {
-            "build": record.build,
-            "subdir": record.subdir,
-        }
-        if channel_name:
-            qualifiers["channel"] = channel_name
-        if filename and filename.endswith(".conda"):
-            qualifiers["type"] = "conda"
-        elif filename and filename.endswith(".tar.bz2"):
-            qualifiers["type"] = "tar.bz2"
-        purl = PackageURL(
-            type="conda",
-            name=str(record.name),
-            version=str(record.version),
-            qualifiers=qualifiers,
-        )
-
-        hashes = []
-        for algorithm, value, expected_length in (
-            (HashAlgorithm.SHA_256, record.sha256, 64),
-            (HashAlgorithm.MD5, record.md5, 32),
-        ):
-            if not value:
-                continue
-            if len(value) != expected_length or any(
-                character not in hexdigits for character in value
-            ):
-                raise CondaValueError(
-                    f"Invalid {algorithm.value} hash for conda package {record.name}"
-                )
-            hashes.append(HashType(alg=algorithm, content=value.lower()))
-
-        properties = [
-            Property(name="conda:package:build", value=record.build),
-            Property(name="conda:package:build-number", value=str(record.build_number)),
-            Property(name="conda:package:subdir", value=record.subdir),
+        purl, properties, url = package_identity(record)
+        hashes = [
+            HashType(alg=HashAlgorithm(algorithm), content=value)
+            for algorithm, value in validated_hashes(record)
         ]
-        if channel_name:
-            properties.append(
-                Property(name="conda:package:channel", value=channel_name)
-            )
-        size = getattr(record, "size", None)
-        if filename:
-            properties.append(Property(name="conda:package:filename", value=filename))
-        if size is not None:
-            properties.append(Property(name="conda:package:size", value=str(size)))
-
-        external_references = []
-        url = str(record.url) if record.url else None
-        if url:
-            try:
-                parts = urlsplit(url)
-                is_windows_path = (
-                    len(parts.scheme) == 1
-                    and len(url) > 2
-                    and url[1] == ":"
-                    and url[2] in {"/", "\\"}
+        external_references = (
+            [
+                ExternalReference(
+                    type=ExternalReferenceType.DISTRIBUTION,
+                    url=XsUri(url),
                 )
-                if (
-                    parts.scheme
-                    and parts.scheme.lower() != "file"
-                    and not is_windows_path
-                ):
-                    sanitized = remove_auth(split_anaconda_token(url)[0])
-                    parts = urlsplit(sanitized)
-                    external_references.append(
-                        ExternalReference(
-                            type=ExternalReferenceType.DISTRIBUTION,
-                            url=XsUri(
-                                urlunsplit(
-                                    (parts.scheme, parts.netloc, parts.path, "", "")
-                                )
-                            ),
-                        )
-                    )
-            except ValueError:
-                pass
+            ]
+            if url
+            else []
+        )
 
         licenses = []
         if record.license:
@@ -154,7 +84,9 @@ class CycloneDXPackage:
             hashes=hashes,
             licenses=licenses,
             external_references=external_references,
-            properties=properties,
+            properties=[
+                Property(name=name, value=value) for name, value in properties.items()
+            ],
         )
 
 
@@ -169,75 +101,22 @@ class CycloneDXDependencyGraph:
         self.components_by_reference = {
             package.component.bom_ref: package.component for package in packages
         }
-        self.edges: dict[BomRef, list[BomRef]] = {}
-        self.missing_edge_count = 0
-        self.incomplete_references: set[BomRef] = set()
-
-        for package in packages:
-            record_ref = package.component.bom_ref
-            dependencies = set()
-            for dependency in package.record.depends:
-                dependency_spec = MatchSpec(dependency)
-                dependency_name = dependency_spec.name
-                dependency_ref = self.references_by_name.get(
-                    (dependency_name or "").lower()
-                )
-                if dependency_ref is None:
-                    self.missing_edge_count += 1
-                    self.incomplete_references.add(record_ref)
-                else:
-                    dependencies.add(dependency_ref)
-            self.edges[record_ref] = sorted(
-                dependencies,
-                key=lambda reference: reference.value,
+        self.edges, self.missing_edge_count, self.incomplete_references = (
+            package_dependency_graph(
+                ((package.record, package.component.bom_ref) for package in packages),
+                self.references_by_name,
             )
+        )
 
     def root_references(self, requested_packages: list[MatchSpec]) -> list[BomRef]:
         """Choose requested roots or infer roots that cover the whole graph."""
-        if requested_packages:
-            return sorted(
-                {
-                    reference
-                    for spec in requested_packages
-                    if (
-                        reference := self.references_by_name.get(
-                            (spec.name or "").lower()
-                        )
-                    )
-                    is not None
-                },
-                key=lambda reference: reference.value,
-            )
-
-        incoming = {reference: 0 for reference in self.edges}
-        for dependencies in self.edges.values():
-            for dependency in dependencies:
-                incoming[dependency] += 1
-        roots = sorted(
-            (reference for reference, count in incoming.items() if count == 0),
-            key=lambda reference: reference.value,
+        return root_dependency_references(
+            requested_packages, self.edges, self.references_by_name
         )
-        reachable: set[BomRef] = set()
-        for reference in [
-            *roots,
-            *sorted(self.edges, key=lambda item: item.value),
-        ]:
-            if reference in reachable:
-                continue
-            if reference not in roots:
-                roots.append(reference)
-            pending = [reference]
-            while pending:
-                dependency = pending.pop()
-                if dependency in reachable:
-                    continue
-                reachable.add(dependency)
-                pending.extend(self.edges[dependency])
-        return roots
 
 
 class CycloneDXExporter:
-    """Build a CycloneDX 1.7 document from a resolved conda environment."""
+    """Build a CycloneDX document from a resolved conda environment."""
 
     def __init__(
         self,
@@ -245,7 +124,20 @@ class CycloneDXExporter:
         *,
         metadata: CycloneDXExportMetadata | None = None,
         output_reproducible: bool = False,
+        schema_version: str = "1.7",
+        serialization: str = "json",
     ) -> None:
+        if (schema_version, serialization) not in {
+            ("1.7", "json"),
+            ("1.6", "json"),
+            ("1.7", "xml"),
+        }:
+            raise CondaValueError(
+                f"Unsupported CycloneDX output: {schema_version} {serialization}. "
+                "Choose JSON 1.7, JSON 1.6, or XML 1.7."
+            )
+        self.schema_version = schema_version
+        self.serialization = serialization
         if not environment.explicit_packages:
             raise CondaValueError(
                 "CycloneDX export requires exact package records. Export an installed "
@@ -356,7 +248,7 @@ class CycloneDXExporter:
                 ) from error
 
     def export(self) -> str:
-        """Serialize the environment as CycloneDX 1.7 JSON."""
+        """Serialize the environment with the selected version and encoding."""
         tool = Component(
             type=ComponentType.APPLICATION,
             name="conda-sboms",
@@ -419,21 +311,26 @@ class CycloneDXExporter:
             ],
         )
 
-        document = json.loads(JsonV1Dot7(bom).output_as_string())
-        document.pop("serialNumber")
-        if self.output_reproducible:
-            document["metadata"].pop("timestamp")
-        for dependency in document["dependencies"]:
-            dependency.setdefault("dependsOn", [])
+        serialized = make_outputter(
+            bom,
+            output_format=(
+                OutputFormat.JSON if self.serialization == "json" else OutputFormat.XML
+            ),
+            schema_version=(
+                SchemaVersion.V1_7
+                if self.schema_version == "1.7"
+                else SchemaVersion.V1_6
+            ),
+        ).output_as_string()
         root_composition = {
             "aggregate": self.root_completeness,
             "assemblies": [self.root.bom_ref.value],
         }
         if self.roots_inferred:
             root_composition["dependencies"] = [self.root.bom_ref.value]
-        document["compositions"] = [root_composition]
+        compositions = [root_composition]
         if self.graph.incomplete_references:
-            document["compositions"].append(
+            compositions.append(
                 {
                     "aggregate": "incomplete",
                     "dependencies": sorted(
@@ -442,7 +339,50 @@ class CycloneDXExporter:
                     ),
                 }
             )
-        return json.dumps(document, indent=2, sort_keys=True) + "\n"
+        if self.serialization == "json":
+            document = json.loads(serialized)
+            document.pop("serialNumber")
+            if self.output_reproducible:
+                document["metadata"].pop("timestamp")
+            for dependency in document["dependencies"]:
+                dependency.setdefault("dependsOn", [])
+            document["compositions"] = compositions
+            return json.dumps(document, indent=2, sort_keys=True) + "\n"
+
+        document = minidom.parseString(serialized)
+        root = document.documentElement
+        namespace = root.namespaceURI
+        root.removeAttribute("serialNumber")
+        if self.output_reproducible:
+            metadata = root.getElementsByTagNameNS(namespace, "metadata")[0]
+            timestamp = metadata.getElementsByTagNameNS(namespace, "timestamp")[0]
+            metadata.removeChild(timestamp)
+        elements = document.createElementNS(namespace, "compositions")
+        for composition in compositions:
+            element = document.createElementNS(namespace, "composition")
+            aggregate = document.createElementNS(namespace, "aggregate")
+            aggregate.appendChild(document.createTextNode(composition["aggregate"]))
+            element.appendChild(aggregate)
+            for collection, name in (
+                ("assemblies", "assembly"),
+                ("dependencies", "dependency"),
+            ):
+                if collection not in composition:
+                    continue
+                references = document.createElementNS(namespace, collection)
+                for reference in composition[collection]:
+                    child = document.createElementNS(namespace, name)
+                    child.setAttribute("ref", reference)
+                    references.appendChild(child)
+                element.appendChild(references)
+            elements.appendChild(element)
+        dependencies = next(
+            child
+            for child in root.childNodes
+            if child.namespaceURI == namespace and child.localName == "dependencies"
+        )
+        root.insertBefore(elements, dependencies.nextSibling)
+        return document.toprettyxml(indent="  ")
 
 
 def export_cyclonedx_json(
@@ -456,4 +396,34 @@ def export_cyclonedx_json(
         environment,
         metadata=metadata,
         output_reproducible=output_reproducible,
+    ).export()
+
+
+def export_cyclonedx_json_v1_6(
+    environment: Environment,
+    *,
+    metadata: CycloneDXExportMetadata | None = None,
+    output_reproducible: bool = False,
+) -> str:
+    """Export a resolved conda environment as CycloneDX 1.6 JSON."""
+    return CycloneDXExporter(
+        environment,
+        metadata=metadata,
+        output_reproducible=output_reproducible,
+        schema_version="1.6",
+    ).export()
+
+
+def export_cyclonedx_xml(
+    environment: Environment,
+    *,
+    metadata: CycloneDXExportMetadata | None = None,
+    output_reproducible: bool = False,
+) -> str:
+    """Export a resolved conda environment as CycloneDX 1.7 XML."""
+    return CycloneDXExporter(
+        environment,
+        metadata=metadata,
+        output_reproducible=output_reproducible,
+        serialization="xml",
     ).export()

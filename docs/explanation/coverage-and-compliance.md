@@ -33,7 +33,8 @@ The exporter also omits:
 - product manufacturer and SBOM author identities unless supplied by the caller
 - vulnerability, VEX, signature, and attestation data
 
-The root composition marks overall coverage as unproven. Conda-specific
+CycloneDX root compositions and SPDX relationship completeness mark overall
+coverage as unproven. Conda-specific
 properties record known external-package, virtual-package, and missing-edge
 counts supplied by the input. These signals do not fill the missing inventory.
 
@@ -46,7 +47,8 @@ When a client supplies `Environment.requested_packages`, the exporter connects
 the root application to those resolved packages. `conda export --from-history`
 can preserve this information when the prefix history contains it. When
 requested packages are absent, the exporter must infer root edges. The
-[format reference](../reference/cyclonedx-json.md) defines that algorithm.
+[CycloneDX reference](../reference/cyclonedx-json.md)
+defines that algorithm, which is also used by the SPDX exporter.
 
 Conda 26.7 populates `requested_packages` with every installed conda package
 when a prefix is exported without `--from-history`. In that case,
@@ -56,7 +58,7 @@ when a prefix is exported without `--from-history`. In that case,
 them to the exporter, so those packages do not produce an omission count or
 make the root composition `incomplete`.
 
-## Cyber Resilience Act boundary
+## Cyber Resilience Act requirements
 
 Part II, point 1 of Annex I to the EU
 [Cyber Resilience Act](https://eur-lex.europa.eu/eli/reg/2024/2847/oj/eng)
@@ -65,13 +67,13 @@ products in scope to identify and document vulnerabilities and components. The
 documentation includes an SBOM in a commonly used, machine-readable format
 that covers at least top-level dependencies.
 
-CycloneDX 1.7 is this project's choice of commonly used machine-readable
-format. The regulation itself does not prescribe CycloneDX. Article 13(24)
+CycloneDX and SPDX are machine-readable formats supported by this project.
+The regulation itself does not prescribe either format. Article 13(24)
 allows the European Commission to specify SBOM formats and elements through
 implementing acts.
 
 A schema-valid SBOM does not establish product conformity. A manufacturer must
-determine the product boundary, supply truthful product and organization
+determine which components belong to the product, supply truthful product and organization
 metadata, address components outside conda, maintain the inventory for the
 relevant release, and meet the CRA's other requirements. The output from
 `conda-sboms` can contribute to that technical documentation.
@@ -79,9 +81,9 @@ relevant release, and meet the CRA's other requirements. The output from
 ## Conda standards status
 
 No accepted conda Enhancement Proposal currently defines an SBOM format or CRA
-profile. The exporter follows the
-[CycloneDX 1.7 JSON specification](https://cyclonedx.org/docs/1.7/json/) and
-the published
+profile. The exporters follow the selected
+[CycloneDX specification](https://cyclonedx.org/specification/overview/) or
+[SPDX 3.0.1 specification](https://spdx.github.io/spdx-spec/v3.0.1/) and the published
 [package-url conda type](https://github.com/package-url/purl-spec/blob/main/docs/types/definitions/conda-definition.md).
 
 The open [conda PURL proposal](https://github.com/conda/ceps/pull/159) may
